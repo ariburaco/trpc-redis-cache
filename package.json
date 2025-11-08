@@ -43,9 +43,9 @@
     "typecheck": "tsc --noEmit",
     "check-format": "prettier --check .",
     "check-exports": "attw --pack . --ignore-rules=cjs-resolves-to-esm",
-    "ci": "pnpm run build && pnpm run check-exports && pnpm run lint && pnpm run test",
-    "ci:publish": "pnpm run build && changeset publish",
-    "prepublishOnly": "pnpm run ci",
+    "ci": "bun run build && bun run check-exports && bun run lint && bun run test",
+    "ci:publish": "bun run build && changeset publish",
+    "prepublishOnly": "bun run ci",
     "local-release": "changeset version && changeset publish"
   },
   "devDependencies": {
