@@ -27,7 +27,7 @@ export interface TRPCContext {
 /**
  * Cache configuration options
  */
-export interface CacheConfig {
+export interface CacheConfig<TInput = unknown> {
   /**
    * Time to live in seconds, undefined means permanent
    * @default 60
@@ -55,7 +55,13 @@ export interface CacheConfig {
   /**
    * Optional custom cache key function
    */
-  getCacheKey?: (path: string, rawInput: unknown) => string;
+  getCacheKey?: (path: string, rawInput: TInput | undefined) => string;
+
+  /**
+   * Optional function to determine if the input should be cached
+   * If provided and returns false, caching will be skipped entirely
+   */
+  shouldCache?: (input: TInput | undefined) => boolean;
 
   /**
    * Whether to log debug information
@@ -80,7 +86,7 @@ export interface CacheConfig {
 /**
  * Default cache configuration
  */
-const defaultCacheConfig: CacheConfig = {
+const defaultCacheConfig: CacheConfig<unknown> = {
   ttl: 60, // 60 seconds default
   useUpstash: true,
   userSpecific: true,
@@ -106,11 +112,11 @@ function extractData(result: unknown): unknown {
 /**
  * Create a cache key based on the procedure path, input, and context
  */
-const createCacheKey = (
+const createCacheKey = <TInput = unknown>(
   path: string,
-  input: unknown,
+  input: TInput | undefined,
   ctx: TRPCContext,
-  config: CacheConfig,
+  config: CacheConfig<TInput>,
 ): string => {
   // Use custom cache key function if provided
   if (config.getCacheKey) {
@@ -145,6 +151,7 @@ const cacheConfigSchema = z.object({
   userSpecific: z.boolean().optional(),
   globalCache: z.boolean().optional(),
   getCacheKey: z.function().optional(),
+  shouldCache: z.function().optional(),
   debug: z.boolean().optional(),
   redisUrl: z.string().optional(),
   upstashConfig: z
@@ -168,10 +175,20 @@ const cacheConfigSchema = z.object({
  *   userSpecific: false, // Don't include user ID in cache key
  * });
  *
+ * @example
+ * // With conditional caching based on input
+ * const conditionalCacheMiddleware = createCacheMiddleware<MyContext, { query: string }>({
+ *   ttl: 60,
+ *   shouldCache: (input) => {
+ *     // Only cache if query is not empty
+ *     return input.query.length > 0;
+ *   },
+ * });
+ *
  * const appRouter = createTRPCRouter({
  *   search: protectedProcedure
  *     .input(searchAppSchema)
- *     .use(globalCacheMiddleware)
+ *     .use(conditionalCacheMiddleware)
  *     .query(async ({ input }) => {
  *      // Your query logic here
  *     }),
@@ -179,11 +196,12 @@ const cacheConfigSchema = z.object({
  */
 export function createCacheMiddleware<
   TContext extends TRPCContext = TRPCContext,
->(config?: CacheConfig) {
+  TInput = unknown,
+>(config?: CacheConfig<TInput>) {
   const validatedConfig = {
     ...defaultCacheConfig,
     ...cacheConfigSchema.parse(config ?? {}),
-  } as CacheConfig;
+  } as CacheConfig<TInput>;
 
   // Create a logger that respects the debug flag
   const logger = createConditionalLogger(loggerService, {
@@ -199,12 +217,30 @@ export function createCacheMiddleware<
     ctx: TContext;
     path: string;
     next: () => Promise<MiddlewareResult<object>>;
-    input?: unknown;
+    input?: TInput;
   }) => {
     const startTime = performance.now();
-    const cacheKey = createCacheKey(path, input, ctx, validatedConfig);
     const userId = ctx.session?.user?.id ?? 'anonymous';
     const ttl = validatedConfig.ttl; // Can be undefined for permanent cache
+
+    // Check if caching should be skipped based on input
+    if (validatedConfig.shouldCache) {
+      const shouldCache = validatedConfig.shouldCache(input);
+      if (!shouldCache) {
+        logger.info({
+          message: 'Caching skipped due to shouldCache returning false',
+          metadata: {
+            userId,
+            path,
+            input,
+          },
+        });
+        // Skip all caching logic and execute the procedure directly
+        return await next();
+      }
+    }
+
+    const cacheKey = createCacheKey(path, input, ctx, validatedConfig);
 
     try {
       if (validatedConfig.useUpstash) {
